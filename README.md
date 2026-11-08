@@ -1,85 +1,80 @@
-# Face detection: MCP server + REST server
+# 人臉偵測:MCP server + REST server
 
 ```
-MCP client --(image as base64)--> MCP server --(image as multipart upload)--> REST server (FastAPI + MediaPipe)
+MCP client --(圖片以 base64 傳送)--> MCP server --(圖片以 multipart 上傳)--> REST server (FastAPI + MediaPipe)
 ```
 
-The client sends the image **data** itself; the MCP server never reads the local file system, so the
-same setup works on your machine and when deployed elsewhere.
+Client 直接傳送圖片**資料**;MCP server 不會讀取本機檔案系統,所以同一套做法在你的電腦上和部署到其他地方都能用。
 
-## Project layout
+## 專案結構
 
 ```
-models/blaze_face_short_range.tflite   MediaPipe BlazeFace (short-range) model
-rest-server/    FastAPI + MediaPipe; POST /faces/count, GET /health
-mcp-server/     MCP server exposing the detect_face tool
-examples/       detect_face_client.py, a minimal MCP client
+models/blaze_face_short_range.tflite   MediaPipe BlazeFace(short-range)模型
+rest-server/    FastAPI + MediaPipe;POST /faces/count、GET /health
+mcp-server/     提供 detect_face 工具的 MCP server
+examples/       detect_face_client.py,最精簡的 MCP client 範例
 ```
 
-## Contract
+## 介面約定
 
-MCP tool `detect_face`
-- in:  `{ "image_base64": "<base64 of the image file bytes>" }` (jpg/png/webp/bmp, up to 20 MiB; a `data:...;base64,` prefix is tolerated)
-- out: `{ "hasface": true, "count": 3 }`
-- failure: `is_error: true` with a message (invalid base64, empty, too large, not a valid image, REST server unreachable)
+MCP 工具 `detect_face`
+- 輸入:`{ "image_base64": "<圖片檔案位元組的 base64>" }`(jpg/png/webp/bmp,最大 20 MiB;可帶 `data:...;base64,` 前綴)
+- 輸出:`{ "hasface": true, "count": 3 }`
+- 失敗:`is_error: true` 並附上訊息(base64 無效、空圖片、太大、不是有效圖片、連不上 REST server)
 
 REST server
-- `POST /faces/count` (multipart field `file`) -> `{ "count": 3 }`
+- `POST /faces/count`(multipart 欄位 `file`)-> `{ "count": 3 }`
 - `GET /health`
 
-## Run (conda)
+## 執行方式(conda)
 
-Two services, two conda environments (`restserver`, `mcpserver`):
+兩個服務、兩個 conda 環境(`restserver`、`mcpserver`):
 
 ```bash
-# 1) REST server on :8000
+# 1) REST server,埠 8000
 conda activate restserver
 cd rest-server && python -m uvicorn main:app --port 8000
 
-# 2) MCP server on :8001, endpoint http://127.0.0.1:8001/mcp
+# 2) MCP server,埠 8001,端點 http://127.0.0.1:8001/mcp
 conda activate mcpserver
 cd mcp-server && MCP_TRANSPORT=streamable-http REST_SERVER_URL=http://127.0.0.1:8000 python server.py
 ```
 
-Try it with the example client:
+用範例 client 試試看:
 
 ```bash
 python examples/detect_face_client.py /path/to/photo.jpg
 ```
 
-Or register the HTTP server with Claude Code: `claude mcp add --transport http face-detect http://127.0.0.1:8001/mcp`.
-Note a language model has to write the base64 itself, so this is practical for programmatic clients and
-small images, not for pasting large photos through a chat.
+也可以把這個 HTTP server 註冊到 Claude Code:`claude mcp add --transport http face-detect http://127.0.0.1:8001/mcp`。
+注意:base64 必須由語言模型自己寫出來,所以這個做法適合程式化的 client 和小圖片,不適合在聊天中貼大張照片。
 
-Without `MCP_TRANSPORT=streamable-http` the server runs over stdio (the MCP client launches it, and
-environment variables must be passed by the client, e.g. `claude mcp add -e REST_SERVER_URL=...`).
+沒有設定 `MCP_TRANSPORT=streamable-http` 時,server 會以 stdio 執行(由 MCP client 負責啟動,環境變數也必須由 client 傳入,例如 `claude mcp add -e REST_SERVER_URL=...`)。
 
-| Variable | Default | Used by |
+| 變數 | 預設值 | 使用者 |
 |---|---|---|
-| `MCP_TRANSPORT` | `stdio` | MCP server (`stdio` or `streamable-http`) |
-| `MCP_HOST` / `MCP_PORT` | `127.0.0.1` / `8001` | MCP server (HTTP mode) |
+| `MCP_TRANSPORT` | `stdio` | MCP server(`stdio` 或 `streamable-http`) |
+| `MCP_HOST` / `MCP_PORT` | `127.0.0.1` / `8001` | MCP server(HTTP 模式) |
 | `REST_SERVER_URL` | `http://127.0.0.1:8000` | MCP server |
 | `MODEL_PATH` | `models/blaze_face_short_range.tflite` | REST server |
 | `MIN_DETECTION_CONFIDENCE` | `0.5` | REST server |
 
-HTTP mode has no authentication. Keep it on `127.0.0.1`; add auth before binding to a public address.
-The MCP server accepts request bodies up to 27.7 MiB (the SDK default of 4 MiB would reject images over ~3 MiB). See [Size limits](#size-limits).
+HTTP 模式沒有認證。請讓它只綁在 `127.0.0.1`;要綁到公開位址之前,先加上認證。
+MCP server 接受最大 27.7 MiB 的請求內容(SDK 預設的 4 MiB 會擋掉大於約 3 MiB 的圖片)。詳見[大小限制](#大小限制)。
 
-## Size limits
+## 大小限制
 
-An image has to pass three limits on its way in. They are sized so that an outer limit never
-rejects an image the inner ones would accept.
+圖片進來時要通過三道限制。它們的大小是這樣安排的:外層的限制不會擋掉內層本來能接受的圖片。
 
-| # | Where | Limit | Set in | If exceeded |
+| # | 位置 | 限制 | 設定在 | 超過時 |
 |---|---|---|---|---|
-| 1 | HTTP request body (HTTP mode only) | `MAX_REQUEST_BODY_BYTES` = 29,010,604 bytes (27.7 MiB) | `max_request_body_size=MAX_REQUEST_BODY_BYTES` in the `mcp.run(...)` call at the bottom of `mcp-server/server.py` | HTTP 413 `Request body too large`; the tool is never called |
-| 2 | Length of the `image_base64` text | `MAX_BASE64_CHARS` = 27,962,028 characters (the base64 text of a 20 MiB image) | `MAX_BASE64_CHARS` in `mcp-server/server.py`, checked in `decode_image()` before decoding | tool error `image larger than 20 MB` |
-| 3 | Image uploaded to the REST server | `MAX_UPLOAD_BYTES` = 20 MiB | `MAX_UPLOAD_BYTES` in `rest-server/main.py` | REST answers 413, the tool reports `image larger than 20 MB` |
+| 1 | HTTP 請求內容(僅 HTTP 模式) | `MAX_REQUEST_BODY_BYTES` = 29,010,604 位元組(27.7 MiB) | `mcp-server/server.py` 最下方 `mcp.run(...)` 裡的 `max_request_body_size=MAX_REQUEST_BODY_BYTES` | HTTP 413 `Request body too large`;工具不會被呼叫 |
+| 2 | `image_base64` 文字的長度 | `MAX_BASE64_CHARS` = 27,962,028 字元(20 MiB 圖片的 base64 文字) | `mcp-server/server.py` 的 `MAX_BASE64_CHARS`,在 `decode_image()` 解碼前檢查 | 工具錯誤 `image larger than 20 MB` |
+| 3 | 上傳到 REST server 的圖片 | `MAX_UPLOAD_BYTES` = 20 MiB | `rest-server/main.py` 的 `MAX_UPLOAD_BYTES` | REST 回 413,工具回報 `image larger than 20 MB` |
 
-All sizes in this section are in MiB (1 MiB = 1,048,576 bytes). The tool's error text still says
-"20 MB" because that is the literal message the code returns.
+本節的大小單位都是 MiB(1 MiB = 1,048,576 位元組)。工具的錯誤文字仍然寫「20 MB」,因為那是程式碼實際回傳的原文。
 
-### Where the numbers come from
+### 這些數字怎麼來的
 
 ```python
 MAX_IMAGE_BYTES = 20 * 1024 * 1024                  # 20 MiB, the biggest image we accept
@@ -87,12 +82,13 @@ MAX_BASE64_CHARS = ((MAX_IMAGE_BYTES + 2) // 3) * 4  # base64 turns every 3 byte
 MAX_REQUEST_BODY_BYTES = MAX_BASE64_CHARS + 1024 * 1024  # plus 1 MiB for the JSON-RPC wrapper around it
 ```
 
-### Why the SDK limit is set explicitly
+- `MAX_IMAGE_BYTES`:我們接受的最大圖片,20 MiB。
+- `MAX_BASE64_CHARS`:base64 每 3 個位元組變成 4 個字元,所以 20 MiB 的圖片轉成文字後是 27,962,028 個字元。
+- `MAX_REQUEST_BODY_BYTES`:再加 1 MiB,留給包在外面的 JSON-RPC 訊息。
 
-The MCP SDK rejects HTTP request bodies over **4 MiB** by default. Base64 makes an image about 33%
-bigger, so by default only images up to roughly 3 MiB could be sent, and a 6 MiB photo would get
-HTTP 413 before reaching the tool. `server.py` therefore raises the SDK limit when it starts in
-HTTP mode:
+### 為什麼要明確設定 SDK 的上限
+
+MCP SDK 預設會拒絕超過 **4 MiB** 的 HTTP 請求內容。Base64 會讓圖片變大約 33%,所以預設只能傳大約 3 MiB 以內的圖片,6 MiB 的照片還沒到達工具就會收到 HTTP 413。因此 `server.py` 在 HTTP 模式啟動時調高了 SDK 的上限:
 
 ```python
 mcp.run(
@@ -103,21 +99,19 @@ mcp.run(
 )
 ```
 
-Limit 1 is an HTTP limit, so it does not apply in stdio mode. Limits 2 and 3 apply in both modes.
+第 1 道限制是 HTTP 的限制,所以 stdio 模式不適用。第 2、3 道限制在兩種模式都適用。
 
-### Example
+### 範例
 
-A 6 MiB photo becomes about 8 MiB of base64 text. That is under limit 1 (27.7 MiB) and limit 2
-(about 26.7 MiB), and the decoded image is under limit 3 (20 MiB), so it is accepted.
+一張 6 MiB 的照片轉成 base64 後約 8 MiB 的文字。它低於第 1 道限制(27.7 MiB)和第 2 道限制(約 26.7 MiB),解碼後的圖片也低於第 3 道限制(20 MiB),所以會被接受。
 
-### Changing the maximum image size
+### 修改最大圖片大小
 
-Set `MAX_IMAGE_BYTES` in `mcp-server/server.py` and `MAX_UPLOAD_BYTES` in `rest-server/main.py` to
-the same value. Limits 1 and 2 are calculated from `MAX_IMAGE_BYTES`, so they follow automatically.
+把 `mcp-server/server.py` 的 `MAX_IMAGE_BYTES` 和 `rest-server/main.py` 的 `MAX_UPLOAD_BYTES` 改成相同的值。第 1、2 道限制是由 `MAX_IMAGE_BYTES` 算出來的,會自動跟著變。
 
-## Tests
+## 測試
 
 ```bash
-cd mcp-server  && python -m pytest   # env: mcpserver
-cd rest-server && python -m pytest   # env: restserver
+cd mcp-server  && python -m pytest   # 環境:mcpserver
+cd rest-server && python -m pytest   # 環境:restserver
 ```
