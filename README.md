@@ -19,7 +19,7 @@ examples/       detect_face_client.py, a minimal MCP client
 ## Contract
 
 MCP tool `detect_face`
-- in:  `{ "image_base64": "<base64 of the image file bytes>" }` (jpg/png/webp/bmp, up to 20 MB; a `data:...;base64,` prefix is tolerated)
+- in:  `{ "image_base64": "<base64 of the image file bytes>" }` (jpg/png/webp/bmp, up to 20 MiB; a `data:...;base64,` prefix is tolerated)
 - out: `{ "hasface": true, "count": 3 }`
 - failure: `is_error: true` with a message (invalid base64, empty, too large, not a valid image, REST server unreachable)
 
@@ -63,7 +63,7 @@ environment variables must be passed by the client, e.g. `claude mcp add -e REST
 | `MIN_DETECTION_CONFIDENCE` | `0.5` | REST server |
 
 HTTP mode has no authentication. Keep it on `127.0.0.1`; add auth before binding to a public address.
-The MCP server accepts request bodies up to ~28 MB (the SDK default of 4 MB would reject images over ~3 MB).
+The MCP server accepts request bodies up to 27.7 MiB (the SDK default of 4 MiB would reject images over ~3 MiB). See [Size limits](#size-limits).
 
 ## Size limits
 
@@ -72,22 +72,25 @@ rejects an image the inner ones would accept.
 
 | # | Where | Limit | Set in | If exceeded |
 |---|---|---|---|---|
-| 1 | HTTP request body (HTTP mode only) | 29,010,604 bytes (about 27.7 MiB) | `max_request_body_size=MAX_REQUEST_BODY_BYTES` in the `mcp.run(...)` call at the bottom of `mcp-server/server.py` | HTTP 413 `Request body too large`; the tool is never called |
-| 2 | Length of the `image_base64` text | 27,962,028 characters (a 20 MB image) | `MAX_BASE64_CHARS` in `mcp-server/server.py`, checked in `decode_image()` before decoding | tool error `image larger than 20 MB` |
-| 3 | Image uploaded to the REST server | 20 MB | `MAX_UPLOAD_BYTES` in `rest-server/main.py` | REST answers 413, the tool reports `image larger than 20 MB` |
+| 1 | HTTP request body (HTTP mode only) | `MAX_REQUEST_BODY_BYTES` = 29,010,604 bytes (27.7 MiB) | `max_request_body_size=MAX_REQUEST_BODY_BYTES` in the `mcp.run(...)` call at the bottom of `mcp-server/server.py` | HTTP 413 `Request body too large`; the tool is never called |
+| 2 | Length of the `image_base64` text | `MAX_BASE64_CHARS` = 27,962,028 characters (the base64 text of a 20 MiB image) | `MAX_BASE64_CHARS` in `mcp-server/server.py`, checked in `decode_image()` before decoding | tool error `image larger than 20 MB` |
+| 3 | Image uploaded to the REST server | `MAX_UPLOAD_BYTES` = 20 MiB | `MAX_UPLOAD_BYTES` in `rest-server/main.py` | REST answers 413, the tool reports `image larger than 20 MB` |
+
+All sizes in this section are in MiB (1 MiB = 1,048,576 bytes). The tool's error text still says
+"20 MB" because that is the literal message the code returns.
 
 ### Where the numbers come from
 
 ```python
-MAX_IMAGE_BYTES = 20 * 1024 * 1024                  # 20 MB, the biggest image we accept
+MAX_IMAGE_BYTES = 20 * 1024 * 1024                  # 20 MiB, the biggest image we accept
 MAX_BASE64_CHARS = ((MAX_IMAGE_BYTES + 2) // 3) * 4  # base64 turns every 3 bytes into 4 characters
 MAX_REQUEST_BODY_BYTES = MAX_BASE64_CHARS + 1024 * 1024  # plus 1 MiB for the JSON-RPC wrapper around it
 ```
 
 ### Why the SDK limit is set explicitly
 
-The MCP SDK rejects HTTP request bodies over **4 MB** by default. Base64 makes an image about 33%
-bigger, so by default only images up to roughly 3 MB could be sent, and a 6 MB photo would get
+The MCP SDK rejects HTTP request bodies over **4 MiB** by default. Base64 makes an image about 33%
+bigger, so by default only images up to roughly 3 MiB could be sent, and a 6 MiB photo would get
 HTTP 413 before reaching the tool. `server.py` therefore raises the SDK limit when it starts in
 HTTP mode:
 
@@ -96,7 +99,7 @@ mcp.run(
     transport="streamable-http",
     host=os.environ.get("MCP_HOST", "127.0.0.1"),
     port=int(os.environ.get("MCP_PORT", "8001")),
-    max_request_body_size=MAX_REQUEST_BODY_BYTES,  # raise the SDK's 4 MB default
+    max_request_body_size=MAX_REQUEST_BODY_BYTES,  # raise the SDK's 4 MiB default
 )
 ```
 
@@ -104,8 +107,8 @@ Limit 1 is an HTTP limit, so it does not apply in stdio mode. Limits 2 and 3 app
 
 ### Example
 
-A 6 MB photo becomes about 8 MB of base64 text. That is under limit 1 (27.7 MiB) and limit 2
-(about 26.7 MiB), and the decoded image is under limit 3 (20 MB), so it is accepted.
+A 6 MiB photo becomes about 8 MiB of base64 text. That is under limit 1 (27.7 MiB) and limit 2
+(about 26.7 MiB), and the decoded image is under limit 3 (20 MiB), so it is accepted.
 
 ### Changing the maximum image size
 
